@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sublunar point – sanity tests</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; margin: 2rem; background: #0b1020; color: #dde; }
+    .pass { color: #6d6; } .fail { color: #f66; }
+  </style>
+</head>
+<body>
+  <h1>Sanity tests</h1>
+  <ul id="out"></ul>
+  <p id="done"></p>
+  <script type="module">
+    import { sublunarPoint, distanceKm, Astronomy } from './js/moon.js';
+    import { sampleWindow, findPasses, suggestCities } from './js/search.js';
+
+    const out = document.getElementById('out');
+    let failures = 0;
+    function check(name, ok, detail = '') {
+      if (!ok) failures++;
+      const li = document.createElement('li');
+      li.className = ok ? 'pass' : 'fail';
+      li.textContent = `${ok ? 'PASS' : 'FAIL'} ${name} ${detail}`;
+      out.append(li);
+    }
+
+    // 1. The Moon should be at the zenith at its own sublunar point.
+    for (const iso of ['2000-01-01T12:00Z', '2024-04-08T18:00Z', '2026-11-01T00:00Z', '2031-07-15T06:30Z']) {
+      const p = sublunarPoint(new Date(iso));
+      const obs = new Astronomy.Observer(p.lat, p.lon, 0);
+      const eq = Astronomy.Equator(Astronomy.Body.Moon, new Date(iso), obs, true, true);
+      const hor = Astronomy.Horizon(new Date(iso), obs, eq.ra, eq.dec);
+      check(`zenith at ${iso}`, hor.altitude > 89.5, `alt=${hor.altitude.toFixed(3)}° (lat ${p.lat.toFixed(3)}, lon ${p.lon.toFixed(3)})`);
+    }
+
+    // 2. Latitude bounded by the Moon's maximum declination over a nodal cycle.
+    let maxLat = 0;
+    for (let ms = Date.UTC(2020, 0, 1); ms < Date.UTC(2039, 0, 1); ms += 6 * 3600e3) {
+      maxLat = Math.max(maxLat, Math.abs(sublunarPoint(new Date(ms)).lat));
+    }
+    check('|lat| ≤ 28.8° over 2020–2039', maxLat < 28.8 && maxLat > 28.0, `max=${maxLat.toFixed(3)}°`);
+
+    // 3. Pass finder: results are within threshold and are true local minima.
+    let t = performance.now();
+    const s = sampleWindow(new Date('2026-11-01T00:00Z'), new Date('2027-11-01T00:00Z'));
+    const sampleMs = performance.now() - t;
+    check('sample 1 year', true, `${s.n} samples in ${sampleMs.toFixed(0)} ms, max|dec| ${s.maxAbsDec.toFixed(2)}°`);
+
+    const honolulu = { lat: 21.3069, lon: -157.8583 };
+    t = performance.now();
+    const r = findPasses(honolulu, s, { thresholdKm: 50 });
+    check('Honolulu passes found', r.passes.length > 0, `${r.passes.length} passes in ${(performance.now() - t).toFixed(0)} ms`);
+    for (const p of r.passes) {
+      const at = (ms) => { const q = sublunarPoint(new Date(ms)); return distanceKm(honolulu.lat, honolulu.lon, q.lat, q.lon); };
+      const ms = p.time.getTime();
+      const ok = p.distanceKm <= 50 && at(ms - 60000) >= p.distanceKm && at(ms + 60000) >= p.distanceKm;
+      check(`  pass ${p.time.toISOString()}`, ok, `${p.distanceKm.toFixed(1)} km`);
+    }
+
+    // 4. Out of band: London gets closest approaches and nearby city suggestions.
+    const london = { lat: 51.5074, lon: -0.1278 };
+    const rl = findPasses(london, s, { thresholdKm: 50 });
+    check('London unreachable', !rl.reachable && rl.passes.length === 0,
+      `closest ${rl.closest[0].distanceKm.toFixed(0)} km at ${rl.closest[0].time.toISOString()}`);
+    const cities = await (await fetch('./data/cities.json')).json();
+    t = performance.now();
+    const sug = suggestCities(london, s, cities, { thresholdKm: 50 });
+    check('London suggestions', sug.length > 0,
+      `${(performance.now() - t).toFixed(0)} ms: ` + sug.map((x) => `${x.city.name}, ${x.city.country} (${x.distanceFromTargetKm.toFixed(0)} km, ${x.passes.length} passes)`).join('; '));
+
+    document.getElementById('done').textContent = failures ? `DONE: ${failures} failures` : 'DONE: all passed';
+  </script>
+</body>
+</html>
